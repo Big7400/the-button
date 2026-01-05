@@ -1,9 +1,7 @@
-# backend/app/schemas.py
+# backend/schemas/user.py
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 
-# --------------------
-# User creation / output
-# --------------------
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
@@ -13,13 +11,11 @@ class UserOut(BaseModel):
     id: int
     username: str
     email: EmailStr
+    is_active: bool
 
     class Config:
         orm_mode = True
 
-# --------------------
-# Login response (JWT token)
-# --------------------
 class Token(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str
