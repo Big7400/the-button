@@ -1,12 +1,10 @@
 from fastapi import FastAPI
-from backend.api import users, auth  # import your routers
+from backend.api import auth  # import auth router
 
-app = FastAPI(title="TheButtonApp API")
+app = FastAPI(title="TheButtonApp API", version="0.1.0")
 
-# Include routers
-app.include_router(users.router, prefix="/users", tags=["users"])
-app.include_router(auth.router, prefix="/auth", tags=["auth"])  # auth routes
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "API is alive"}
+    return {"message": "API is alive"}

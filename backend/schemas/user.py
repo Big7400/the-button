@@ -1,6 +1,6 @@
 # backend/schemas/user.py
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from datetime import datetime
 
 class UserCreate(BaseModel):
     username: str
@@ -12,10 +12,7 @@ class UserOut(BaseModel):
     username: str
     email: EmailStr
     is_active: bool
+    created_at: datetime
 
     class Config:
-        orm_mode = True
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
+        from_attributes = True  # v2 of Pydantic

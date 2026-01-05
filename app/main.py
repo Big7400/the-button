@@ -1,8 +1,8 @@
 # app/main.py
 from fastapi import FastAPI
-from app.routers import auth  # make sure this matches your folder structure
+from app.routers import auth  # import your auth router
 
 app = FastAPI()
 
-# Include the auth router
-app.include_router(auth.router, prefix="/auth")  # <-- prefix is important
+# Register the router
+app.include_router(auth.router, prefix="/auth")

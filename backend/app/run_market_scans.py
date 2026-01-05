@@ -1,5 +1,5 @@
 from datetime import datetime
-from database import SessionLocal
+from backend.database import SessionLocal
 from models import User, Scan
 import yfinance as yf
 import ccxt

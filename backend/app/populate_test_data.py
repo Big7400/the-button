@@ -1,5 +1,5 @@
 from sqlalchemy import text
-from database import engine, Base
+from backend.database import engine, Base
 import models  # make sure all models are imported
 
 print("🧨 Dropping all tables (using CASCADE)...")
