@@ -1,9 +1,16 @@
+# app/schemas.py
 from pydantic import BaseModel, EmailStr
 
-class LoginRequest(BaseModel):
+class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class TokenResponse(BaseModel):
-    status: str
-    token: str
+    class Config:
+        from_attributes = True  # for Pydantic v2
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+
+    class Config:
+        from_attributes = True

@@ -1,11 +1,8 @@
+# app/main.py
 from fastapi import FastAPI
-from app.database import Base, engine
-from app.routers import auth
+from app.routers import auth  # make sure this matches your folder structure
 
-# Create all tables
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="JWT Auth App")
+app = FastAPI()
 
 # Include the auth router
-app.include_router(auth.router, prefix="/auth")
+app.include_router(auth.router, prefix="/auth")  # <-- prefix is important
