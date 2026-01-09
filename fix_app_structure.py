@@ -13,7 +13,10 @@ def write_file(path, content):
 # -----------------------------
 main_py = """from fastapi import FastAPI
 from app.routers import auth, users
-from app.database import Base, engine
+from app.database import Base, engine, get_db
+from sqlalchemy.orm import Session
+from app.models import User
+from app.routers.auth import get_password_hash
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -26,6 +29,25 @@ app.include_router(users.router, prefix="/users", tags=["Users"])
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# -----------------------------
+# Seed a dummy user automatically
+# -----------------------------
+def seed_dummy_user():
+    db = Session(bind=engine)
+    user = db.query(User).filter(User.email == "admin@example.com").first()
+    if not user:
+        hashed_password = get_password_hash("password")
+        user = User(email="admin@example.com", hashed_password=hashed_password, is_superuser=True)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        print("✅ Dummy user created: admin@example.com / password")
+    else:
+        print("✅ Dummy user already exists: admin@example.com / password")
+    db.close()
+
+seed_dummy_user()
 """
 
 write_file(os.path.join(PROJECT_ROOT, "app/main.py"), main_py)
@@ -165,7 +187,7 @@ write_file(os.path.join(PROJECT_ROOT, "app/routers/auth.py"), auth_py)
 # -----------------------------
 # routers/users.py
 # -----------------------------
-users_py = """from fastapi import APIRouter, Depends
+users_py = """from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordBearer
 from app import schemas, models
@@ -198,5 +220,5 @@ def read_me(current_user: models.User = Depends(get_current_user)):
 
 write_file(os.path.join(PROJECT_ROOT, "app/routers/users.py"), users_py)
 
-print("\n✅ Project structure and Phase 2 auth/db setup completed!")
+print("\n✅ Project structure, Phase 2 auth/db setup, and dummy user seeding completed!")
 print("Run: uvicorn app.main:app --reload --port 8001")

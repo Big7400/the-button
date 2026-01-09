@@ -1,9 +1,10 @@
 from fastapi import FastAPI
-from backend.api import auth  # import auth router
+from app.routers import auth  # this is the correct router path now
 
 app = FastAPI(title="TheButtonApp API", version="0.1.0")
 
-app.include_router(auth.router, prefix="/auth", tags=["auth"])
+# Include the auth router
+app.include_router(auth.router)
 
 @app.get("/")
 def root():
