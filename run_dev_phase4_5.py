@@ -1,34 +1,49 @@
-#!/usr/bin/env python3
-import os
-import sys
 import subprocess
+import sys
 import time
 import webbrowser
 from app.database import SessionLocal, engine, Base
 from app.models import User, Role, Product, Order
 from app.core.security import get_password_hash
+from sqlalchemy.orm import Session
 
 PORT = 8001
+URL = f"http://127.0.0.1:{PORT}/docs"
 
-# ---------- Utilities ----------
-def kill_port(port):
-    """Kill processes using the port to avoid conflicts"""
-    try:
-        import psutil
-    except ImportError:
-        print("Installing psutil...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil"])
-        import psutil
+def is_port_in_use(port):
+    """Check if port is in use by a Python process."""
+    result = subprocess.run(
+        ["lsof", "-i", f":{port}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    return result.stdout.strip() != ""
 
-    for proc in psutil.process_iter(['pid', 'name']):
-        for conn in proc.connections(kind='inet'):
-            if conn.laddr.port == port:
-                print(f"Killing process {proc.info['pid']} ({proc.info['name']}) on port {port}")
-                proc.kill()
+def kill_python_on_port(port):
+    """Kill only Python processes using the port (safe on macOS)."""
+    result = subprocess.run(
+        ["lsof", "-ti", f":{port}"],
+        stdout=subprocess.PIPE,
+        text=True
+    )
+    pids = result.stdout.strip().split("\n")
+    for pid in pids:
+        if pid:
+            # check process name
+            name = subprocess.run(
+                ["ps", "-p", pid, "-o", "comm="],
+                stdout=subprocess.PIPE,
+                text=True
+            ).stdout.strip()
+            if "Python" in name:
+                print(f"Killing Python process {pid} on port {port}")
+                subprocess.run(["kill", "-9", pid])
 
-def seed_db():
-    """Seed the database with roles, users, products, and orders"""
-    db = SessionLocal()
+def seed_database():
+    """Create roles, users, products, orders for testing."""
+    Base.metadata.create_all(bind=engine)
+    db: Session = SessionLocal()
 
     # Roles
     admin_role = db.query(Role).filter_by(name="admin").first()
@@ -45,72 +60,53 @@ def seed_db():
     if not db.query(User).filter_by(email="admin@example.com").first():
         admin_user = User(
             email="admin@example.com",
-            hashed_password=get_password_hash("AdminPass123"),
+            hashed_password=get_password_hash("admin123"),
             role_id=admin_role.id
         )
         db.add(admin_user)
-
     if not db.query(User).filter_by(email="user@example.com").first():
-        normal_user = User(
+        regular_user = User(
             email="user@example.com",
-            hashed_password=get_password_hash("UserPass123"),
+            hashed_password=get_password_hash("user123"),
             role_id=user_role.id
         )
-        db.add(normal_user)
+        db.add(regular_user)
+    db.commit()
 
     # Products
-    if not db.query(Product).first():
+    if db.query(Product).count() == 0:
         products = [
-            Product(name="Product A", description="First product", price=19.99),
-            Product(name="Product B", description="Second product", price=29.99),
+            Product(name="Product A", description="Sample product A", price=9.99),
+            Product(name="Product B", description="Sample product B", price=19.99),
         ]
         db.add_all(products)
+        db.commit()
 
     # Orders
-    if not db.query(Order).first():
-        order1 = Order(user_id=normal_user.id, product_id=products[0].id, quantity=2)
-        order2 = Order(user_id=normal_user.id, product_id=products[1].id, quantity=1)
-        db.add_all([order1, order2])
+    if db.query(Order).count() == 0:
+        order = Order(user_id=regular_user.id, product_id=products[0].id, quantity=2)
+        db.add(order)
+        db.commit()
 
-    db.commit()
     db.close()
-    print("Database seeding complete ✅")
+    print("Database seeded successfully.")
 
-def run_server():
-    """Run Uvicorn server with live reload"""
-    print("Starting server on port", PORT)
-    subprocess.Popen(
-        ["uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", str(PORT)],
-        stdout=sys.stdout,
-        stderr=sys.stderr
-    )
-
-def open_browser():
-    """Open Swagger docs and admin endpoint in browser"""
-    time.sleep(3)  # wait a few seconds for the server to start
-    docs_url = f"http://127.0.0.1:{PORT}/docs"
-    admin_url = f"http://127.0.0.1:{PORT}/admin/users"
-    print(f"Opening Swagger docs: {docs_url}")
-    webbrowser.open(docs_url)
-    print(f"Opening Admin /users endpoint: {admin_url}")
-    webbrowser.open(admin_url)
-
-# ---------- Main ----------
 if __name__ == "__main__":
-    print("=== Phase 4.5 Dev Runner with Auto-Browser ===")
+    print("=== Phase 4.5 Full Dev Runner with Auto-Browser & DB Seeder ===")
 
-    # Kill existing processes on port
-    kill_port(PORT)
+    # Kill any Python process blocking the port
+    if is_port_in_use(PORT):
+        kill_python_on_port(PORT)
+        time.sleep(1)
 
-    # Create tables
-    print("Creating database tables...")
-    Base.metadata.create_all(bind=engine)
+    # Seed DB for testing
+    seed_database()
 
-    # Seed DB
-    seed_db()
+    # Start FastAPI server
+    print("Starting FastAPI server...")
+    subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--reload", "--port", str(PORT)])
 
-    # Start server
-    run_server()
-
-    # Open browser automatically
-    open_browser()
+    # Give server a second to start
+    time.sleep(2)
+    print(f"Opening {URL} in browser...")
+    webbrowser.open(URL)
