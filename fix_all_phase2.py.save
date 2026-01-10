@@ -1,0 +1,254 @@
+from __future__ import annotations
+import os
+from pathlib import Path
+import textwrap
+
+ROOT = Path(__file__).resolve().parent
+
+def write_file(rel_path: str, content: str) -> None:
+    path = ROOT / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    print(f"✅ wrote {rel_path}")
+
+def main() -> None:
+    # --- Hard reset DB (schema mismatch fix) ---
+    db_path = ROOT / "app.db"
+    if db_path.exists():
+        db_path.unlink()
+        print("🧹 removed app.db (fresh schema will be created on startup)")
+    else:
+        print("ℹ️ app.db not found (ok)")
+
+    # --- Ensure package dirs exist ---
+    (ROOT / "app" / "routers").mkdir(parents=True, exist_ok=True)
+    (ROOT / "app" / "core").mkdir(parents=True, exist_ok=True)
+
+    # --- app/database.py ---
+    write_file(
+        "app/database.py",
+        textwrap.dedent(
+            """\
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker, declarative_base
+            from typing import Generator
+
+            # Use a single known DB file at project root
+            DATABASE_URL = "sqlite:///./app.db"
+
+            engine = create_engine(
+                DATABASE_URL,
+                connect_args={"check_same_thread": False},  # sqlite + FastAPI
+            )
+
+            SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            Base = declarative_base()
+
+            def get_db() -> Generator:
+                db = SessionLocal()
+                try:
+                    yield db
+                finally:
+                    db.close()
+            """
+        ),
+    )
+
+    # --- app/models.py ---
+    write_file(
+        "app/models.py",
+        textwrap.dedent(
+            """\
+            from sqlalchemy import Column, Integer, String, Boolean, DateTime
+            from sqlalchemy.sql import func
+            from app.database import Base
+
+            class User(Base):
+                __tablename__ = "users"
+
+                id = Column(Integer, primary_key=True, index=True)
+                email = Column(String, unique=True, index=True, nullable=False)
+                hashed_password = Column(String, nullable=False)
+
+                is_active = Column(Boolean, default=True)
+                is_admin = Column(Boolean, default=False)
+
+                created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+                updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+            """
+        ),
+    )
+
+    # --- app/schemas.py ---
+    write_file(
+        "app/schemas.py",
+        textwrap.dedent(
+            """\
+            from pydantic import BaseModel, EmailStr, Field
+
+            class UserCreate(BaseModel):
+                email: EmailStr
+                password: str = Field(min_length=8, max_length=128)
+
+            class UserResponse(BaseModel):
+                id: int
+                email: EmailStr
+                is_active: bool
+                is_admin: bool
+
+                class Config:
+                    from_attributes = True
+
+            class Token(BaseModel):
+                access_token: str
+                token_type: str = "bearer"
+            """
+        ),
+    )
+
+    # --- app/core/config.py ---
+    write_file(
+        "app/core/config.py",
+        textwrap.dedent(
+            """\
+            from pydantic import BaseModel
+
+            class Settings(BaseModel):
+                # Change this before production:
+                SECRET_KEY: str = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+                ALGORITHM: str = "HS256"
+                ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24h dev-friendly
+
+            settings = Settings()
+            """
+        ),
+    )
+
+    # --- app/core/security.py (ARGON2, no bcrypt) ---
+    write_file(
+        "app/core/security.py",
+        textwrap.dedent(
+            """\
+            from datetime import datetime, timedelta, timezone
+            from typing import Optional
+
+            from fastapi import Depends, HTTPException, status
+            from fastapi.security import OAuth2PasswordBearer
+            from jose import JWTError, jwt
+            from passlib.context import CryptContext
+            from sqlalchemy.orm import Session
+
+            from app.core.config import settings
+            from app.database import get_db
+            from app import models
+
+            # IMPORTANT: Argon2 avoids bcrypt backend issues on Python 3.13/macOS
+            pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
+            oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+            def verify_password(plain_password: str, hashed_password: str) -> bool:
+                return pwd_context.verify(plain_password, hashed_password)
+
+            def get_password_hash(password: str) -> str:
+                return pwd_context.hash(password)
+
+            def create_access_token(subject: str, expires_minutes: Optional[int] = None) -> str:
+                expire = datetime.now(timezone.utc) + timedelta(
+                    minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES
+                )
+                to_encode = {"sub": subject, "exp": expire}
+                return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+            def decode_access_token(token: str) -> str:
+                try:
+                    payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+                    sub = payload.get("sub")
+                    if not sub:
+                        raise HTTPException(status_code=401, detail="Token missing subject.")
+                    return str(sub)
+                except JWTError:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid or expired token.",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+
+            def get_current_user(
+                token: str = Depends(oauth2_scheme),
+                db: Session = Depends(get_db),
+            ) -> models.User:
+                user_id = decode_access_token(token)
+                user = db.query(models.User).filter(models.User.id == int(user_id)).first()
+                if not user:
+                    raise HTTPException(status_code=401, detail="User not found.")
+                if not user.is_active:
+                    raise HTTPException(status_code=403, detail="User is inactive.")
+                return user
+            """
+        ),
+    )
+
+    # --- app/routers/auth.py (NO local pwd_context) ---
+    write_file(
+        "app/routers/auth.py",
+        textwrap.dedent(
+            """\
+            from fastapi import APIRouter, Depends, HTTPException, status
+            from fastapi.security import OAuth2PasswordRequestForm
+            from sqlalchemy.orm import Session
+
+            from app.database import get_db
+            from app import models, schemas
+            from app.core.security import get_password_hash, verify_password, create_access_token
+
+            router = APIRouter(prefix="/auth", tags=["auth"])
+
+            @router.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
+            def register(payload: schemas.UserCreate, db: Session = Depends(get_db)):
+                existing = db.query(models.User).filter(models.User.email == payload.email).first()
+                if existing:
+                    raise HTTPException(status_code=400, detail="Email already registered.")
+
+                user = models.User(
+                    email=payload.email,
+                    hashed_password=get_password_hash(payload.password),
+                    is_active=True,
+                    is_admin=False,
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                return user
+
+            @router.post("/login", response_model=schemas.Token)
+            def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+                user = db.query(models.User).filter(models.User.email == form_data.username).first()
+                if not user or not verify_password(form_data.password, user.hashed_password):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid credentials.",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+
+                if not user.is_active:
+                    raise HTTPException(status_code=403, detail="User is inactive.")
+
+                token = create_access_token(subject=str(user.id))
+                return {"access_token": token, "token_type": "bearer"}
+            """
+        ),
+    )
+
+    # --- app/routers/users.py (protected /me) ---
+    write_file(
+        "app/routers/users.py",
+        textwrap.dedent(
+            """\
+            from fastapi import APIRouter, Depends
+            from app.core.security import get_current_user
+            from app import schemas, models
+
+            router = APIRouter(prefix="/users", tags=["users"])
+
+            @router.

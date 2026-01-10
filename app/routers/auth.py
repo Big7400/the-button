@@ -1,48 +1,79 @@
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
-from datetime import datetime, timedelta
-import jwt
 
-from app import schemas, models
 from app.database import get_db
+from app import models, schemas
+from app.core.security import get_password_hash, verify_password, create_access_token
+from app.core.config import settings
 
-SECRET_KEY = "SUPERSECRET123"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+router = APIRouter(prefix="/auth", tags=["auth"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-router = APIRouter()
+def _ensure_roles(db: Session):
+    for name in ["user", "admin"]:
+        if not db.query(models.Role).filter_by(name=name).first():
+            db.add(models.Role(name=name))
+    db.commit()
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+def _maybe_bootstrap_admin(db: Session, email: str) -> bool:
+    # If BOOTSTRAP_ADMIN_EMAIL is set, only that email can be bootstrapped.
+    if settings.BOOTSTRAP_ADMIN_EMAIL:
+        if email != settings.BOOTSTRAP_ADMIN_EMAIL:
+            return False
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+    if not settings.AUTO_PROMOTE_FIRST_ADMIN and not settings.BOOTSTRAP_ADMIN_EMAIL:
+        return False
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    # If there are no admins yet, promote this user.
+    admin_role = db.query(models.Role).filter_by(name="admin").first()
+    has_admin = (
+        db.query(models.User)
+          .join(models.Role, models.User.role_id == models.Role.id)
+          .filter(models.Role.name == "admin")
+          .first()
+        is not None
+    )
+    return (admin_role is not None) and (not has_admin)
 
 @router.post("/register", response_model=schemas.UserResponse)
-def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    hashed_password = get_password_hash(user.password)
-    new_user = models.User(email=user.email, hashed_password=hashed_password)
-    db.add(new_user)
+def register(payload: schemas.UserCreate, db: Session = Depends(get_db)):
+    if db.query(models.User).filter(models.User.email == payload.email).first():
+        raise HTTPException(400, "Email already registered")
+
+    _ensure_roles(db)
+
+    user_role = db.query(models.Role).filter(models.Role.name == "user").first()
+    admin_role = db.query(models.Role).filter(models.Role.name == "admin").first()
+
+    role_id = user_role.id
+
+    # Bootstrap rule: if no admin exists, first user (or configured email) becomes admin
+    if _maybe_bootstrap_admin(db, payload.email):
+        role_id = admin_role.id
+
+    user = models.User(
+        email=payload.email,
+        hashed_password=get_password_hash(payload.password),
+        role_id=role_id,
+        is_active=True,
+    )
+    db.add(user)
     db.commit()
-    db.refresh(new_user)
-    return new_user
+    db.refresh(user)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "is_active": user.is_active,
+        "role": user.role.name,
+    }
 
 @router.post("/login", response_model=schemas.Token)
-def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user.email).first()
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    access_token = create_access_token({"sub": db_user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == form.username).first()
+    if not user or not verify_password(form.password, user.hashed_password):
+        raise HTTPException(401, "Invalid credentials")
+
+    token = create_access_token(str(user.id))
+    return {"access_token": token, "token_type": "bearer"}
