@@ -60,3 +60,7 @@ def get_current_user(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="User is inactive.")
     return user
+def require_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
+    if not current_user.role or current_user.role.name != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
