@@ -159,9 +159,14 @@ def build_plan(payload: schemas.EnginePlanRequest, db: Session, user: models.Use
         recommendation=recommendation,
     )
 
+# TEMPORARY: Make plan public for testing (remove auth)
 @router.post("/plan", response_model=schemas.EnginePlanResponse)
-def plan(payload: schemas.EnginePlanRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    return build_plan(payload, db, user)
+def plan(payload: schemas.EnginePlanRequest, db: Session = Depends(get_db)):
+    # Use hardcoded test user (trader@test.com - user ID 2)
+    fake_user = db.query(models.User).filter(models.User.id == 2).first()
+    if not fake_user:
+        raise HTTPException(404, "Test user not found - please register trader@test.com first")
+    return build_plan(payload, db, fake_user)
 
 @router.post("/commit", response_model=schemas.EngineCommitResponse)
 def commit(payload: schemas.EnginePlanRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
